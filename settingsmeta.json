@@ -1,0 +1,29 @@
+{
+    "skillMetadata": {
+        "sections": [
+            {
+                "name": "Add new shortcuts",
+                "fields": [
+                    {
+                        "name": "new_shortcut",
+                        "type": "text",
+                        "label": "Name",
+                        "value": ""
+                    },
+                    {
+                        "name": "new_phrases",
+                        "type": "text",
+                        "label": "Activation phrases",
+                        "value": ""
+                    },
+                    {
+                        "name": "new_commands",
+                        "type": "text",
+                        "label": "Commands",
+                        "value": ""
+                    }		    
+                ]
+            }	    
+        ]
+    }
+}
