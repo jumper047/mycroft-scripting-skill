@@ -32,6 +32,8 @@ class ScriptingSkill(MycroftSkill):
             self.register_shortcut_intent(k, **v)
         LOG.info("Done with registering from settings")
 
+        self.add_event('recognizer_loop:wakeword', self.handle_wakeword)
+
         self.settings_change_callback = self.on_settings_changed
         self.on_settings_changed()
 
@@ -111,6 +113,10 @@ class ScriptingSkill(MycroftSkill):
             self.register_shortcut_intent(name, phrases, commands)
         self.refresh_shortcut_entity()
         self.save_shortcuts()
+
+    def handle_wakeword(self):
+        """remove event in case something went wrong"""
+        self.remove_event('recognizer_loop:audio_output_start')
 
     @intent_handler("list.shortcuts.intent")
     def list_shortcuts_handler(self, message):
