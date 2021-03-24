@@ -13,149 +13,181 @@
 # limitations under the License.
 
 import os
+import yaml
+from collections import namedtuple, Iterable
 
 from mycroft import MycroftSkill, intent_handler
 from mycroft.messagebus.message import Message
 from mycroft.util.log import LOG
 
 
-class ScriptingSkill(MycroftSkill):
+LOCAL_CONF = "aliases.yaml"
+INTENTDIR_PREFIX = "tmp"
+COMMANDS_SEPARATOR = ";"
+
+AliasEntity = namedtuple("AliasEntity", ["alias", "command", "from_yaml"])
+
+
+class AliasSkill(MycroftSkill):
     def __init__(self):
-        super().__init__("ScriptingSkill")
+        super().__init__("AliasSkill")
+        self.aliases = dict()
 
     def initialize(self):
-
-        self.load_shortcuts()
-
-        LOG.info("Registering shortcuts from settings: {}".format(list(self.shortcuts.keys())))
-        for k, v in self.shortcuts.items():
-            self.register_shortcut_intent(k, **v)
-        LOG.info("Done with registering from settings")
+        # check if tmp folder exists
+        try:
+            os.mkdir(os.path.join(self.file_system.path, INTENTDIR_PREFIX))
+        except FileExistsError:
+            pass
+        self.load_aliases()
 
         self.add_event('recognizer_loop:wakeword', self.handle_wakeword)
 
-        self.settings_change_callback = self.on_settings_changed
-        self.on_settings_changed()
+    def load_aliases(self):
+        for name in self.aliases:
+            self.remove_alias(name)
 
-    def load_shortcuts(self):
-        shortcuts = self.settings.get("shortcuts", dict())
-        self.shortcuts = dict()
-        for s in shortcuts:
-            try:
-                phrases = shortcuts[s]["phrases"].split(";")
-                commands = shortcuts[s]["commands"].split(";")
-            except KeyError as e:
-                LOG.warning("Error while loading shortcut {}: {}".format(s, e))
-            else:
-                self.shortcuts[s] = dict(phrases=phrases, commands=commands)
+        LOG.info(self.settings.get("aliases", {}))
 
-    def save_shortcuts(self):
-        shc = dict()
-        for s in self.shortcuts:
-            shc[s] = dict(phrases=";".join(self.shortcuts[s]["phrases"]),
-                          commands=";".join(self.shortcuts[s]["commands"]))
-        self.settings["shortcuts"] = shc
-        self.settings["shortcuts_names"] = ";".join(self.shortcuts.keys())
 
-    def register_shortcut_intent(self, name, phrases, commands):
-        with self.file_system.open(name + ".intent", "w") as f:
-            f.write("\n".join(phrases))
+        for name, (alias, command) in self.settings.get("aliases", {}):
+            self.add_alias(name, alias, command, False)
+
+        for name, (alias, command) in self.aliases_from_yaml().items():
+            if name in self.aliases:
+                self.remove_alias(name)
+            self.add_alias(name, alias, command, True)
+
+        LOG.info("Aliases loaded.")
+
+    def save_aliases(self):
+        aliases = dict()
+        for name, entity in self.aliases.items():
+            if not entity.from_yaml:
+                aliases[name] = (entity.alias, entity.command)
+        self.settings["aliases"] = aliases
+
+    def aliases_from_yaml(self):
+        """Load dict with intents from yaml"""
+
+        if self.file_system.exists(LOCAL_CONF):
+            aliases = self.file_system.open(LOCAL_CONF, "r").read()
+            return yaml.safe_load(aliases)
+        else:
+            return {}
+
+        
+    def remove_alias(self, name):
+        if self.aliases[name].from_yaml:
+            raise ValueError("Alias named \"%s\" defined in yaml so it can't be deleted", name)
+        del(self.aliases[name])
+        self.disable_intent(name + ".intent")
+        self.remove_event('{}:{}'.format(self.skill_id, name + ".intent"))
+
+
+    def add_alias(self, name, alias, command, from_yaml=False):
+        if name in self.aliases:
+            raise KeyError("Alias \"%s\" already defined", name)
+        self.aliases[name] = AliasEntity(alias, command, from_yaml)
+        with self.file_system.open(os.path.join(
+            self.file_system.path, 
+            INTENTDIR_PREFIX,
+            name + ".intent"), "w") as f:
+            f.write(alias)
         intent_name = '{}:{}'.format(self.skill_id, name + ".intent")
-        intent_file = os.path.join(self.file_system.path, name + ".intent")
+        intent_file = os.path.join(self.file_system.path,
+                                   INTENTDIR_PREFIX,
+                                   name + ".intent")
         # register_padatious_intent
         self.intent_service.register_padatious_intent(intent_name, intent_file)
-        self.add_event(intent_name, self.create_handler(commands), 'mycroft.skill.handler')
-        LOG.info("Registered new shortcut: {}".format(name))
+        self.add_event(intent_name, self.create_handler(command), 'mycroft.skill.handler')
+        LOG.info("Registered new alias: {}".format(name))
 
-    def refresh_shortcut_entity(self):
-        with self.file_system.open("shortcut.entity", "w") as f:
-            f.write("\n".join(self.shortcuts.keys()))
-        entity_name = '{}:{}'.format(self.skill_id, "shortcut.entity")
-        entity_file = os.path.join(self.file_system.path, "shortcut.entity")
-        self.intent_service.register_padatious_entity(entity_name, entity_file)
 
-    def create_handler(self, commands):
-        commands = tuple(commands)
-        def handler(message):
-            com = list(commands)
-            def commands_runner(m=None):
-                try:
-                    next_msg = com.pop(0)
-                except IndexError:
-                    self.remove_event('recognizer_loop:audio_output_start')
-                else:
-                    self.bus.emit(Message("recognizer_loop:utterance", {
-                        'utterances': [next_msg],
-                        'lang': self.lang}))
+    def create_handler(self, command):
 
-            self.bus.emit(Message("recognizer_loop:utterance", {
-                'utterances': [com.pop(0)],
-                'lang': self.lang
-            }))
-            if len(com) > 0:
-                self.add_event('recognizer_loop:audio_output_start', commands_runner)
+        if COMMANDS_SEPARATOR in command:
+            commands = command.split(COMMANDS_SEPARATOR)
+            def handler(message):
+                com = list(commands)
+                def commands_runner(m=None):
+                    try:
+                        next_msg = com.pop(0)
+                    except IndexError:
+                        self.remove_event('recognizer_loop:audio_output_end')
+                    else:
+                        self.bus.emit(Message("recognizer_loop:utterance", {
+                            'utterances': [next_msg],
+                            'lang': self.lang}))
+
+
+                self.bus.emit(Message("recognizer_loop:utterance", {
+                    'utterances': [com.pop(0)],
+                    'lang': self.lang
+                }))
+                if len(com) > 0:
+                    self.add_event('recognizer_loop:audio_output_end', commands_runner)
+        else:
+            def handler(message):
+                self.bus.emit(Message("recognizer_loop:utterance", {
+                    'utterances': [command],
+                    'lang': self.lang
+                }))                
             
         return handler
 
-
-    def on_settings_changed(self):
-        name = self.settings.get("new_shortcut", "")
-        phrases = self.settings.get("new_phrases", "").split(";")
-        commands = self.settings.get("new_commands", "").split(";")
-
-        for i in ["new_shortcut", "new_phrases", "new_commands"]:
-            self.settings[i] = ""
-        
-        if "" not in (name, phrases, commands):
-            self.shortcuts[name] = dict(phrases=phrases, commands=commands)
-            self.disable_intent(name + ".intent")
-            self.remove_event('{}:{}'.format(self.skill_id, name + ".intent"))
-            self.register_shortcut_intent(name, phrases, commands)
-        self.refresh_shortcut_entity()
-        self.save_shortcuts()
-
     def handle_wakeword(self):
-        """remove event in case something went wrong"""
-        self.remove_event('recognizer_loop:audio_output_start')
+        """Interrupt sequence on new wakeword"""
+        self.remove_event('recognizer_loop:audio_output_end')
 
-    @intent_handler("list.shortcuts.intent")
-    def list_shortcuts_handler(self, message):
-        shcuts = ",".join(self.shortcuts)
-        self.speak_dialog('list.shortcuts', {'shortcuts': shcuts})
+    @intent_handler("list.aliases.intent")
+    def list_aliases_handler(self, message):
+        names = ",".join(self.aliases)
+        self.speak_dialog('list.aliases', {'aliases': names})
 
-    @intent_handler("expose.shortcut.intent")
+    @intent_handler("expose.aliases.intent")
     def expose_shortcut_handler(self, message):
-        shortcut = message.data.get('shortcut')
-        if shortcut in self.shortcuts:
-            self.speak_dialog('expose.shortcut',
-                              {'shortcut': shortcut,
-                               'phrases': ",".join(self.shortcuts[shortcut]["phrases"]),
-                               'commands': ",".join(self.shortcuts[shortcut]["commands"])})
+        name = message.data.get('alias')
+        # TODO: i think it should be something like fuzzy matching
+        if name in self.aliases:
+            self.speak_dialog('expose.aliases',
+                              {'aliases': name,
+                               'phrases': self.aliases[name].alias,
+                               'commands': self.aliases[name].command})
         else:
-            self.speak_dialog('shortcut.not.found', {'shortcut': shortcut})
+            self.speak_dialog('alias.not.found', {'alias': names})
 
-    @intent_handler("delete.shortcuts.intent")
+    @intent_handler("delete.aliases.intent")
     def delete_shortcut_handler(self, message):
-        shortcut = message.data.get('shortcut')
-        if shortcut in self.shortcuts:
-            del(self.shortcuts[shortcut])
+        shortcut = message.data.get('alias')
+        if shortcut in self.aliases:
+            del(self.aliases[shortcut])
             self.disable_intent(shortcut + ".intent")
             self.remove_event('{}:{}'.format(self.skill_id,
                                              shortcut + ".intent"))
-            dialog = 'delete.shortcut'
+            dialog = 'delete.alias'
         else:
-            dialog = 'shortcut.not.found'
-        self.speak_dialog(dialog, {'shortcut': shortcut})
+            dialog = 'alias.not.found'
+        self.speak_dialog(dialog, {'alias': shortcut})
 
-    @intent_handler("create.shortcut.intent")
+    @intent_handler("create.alias.intent")
     def create_shortcut_handler(self, message):
-        pass
 
-    # def stop(self):
-    #     pass
 
+        name = self.get_response('input.alias.name',
+                                 validator=lambda utt: utt not in self.aliases, 
+                                 on_fail='name.already.used',
+                                 num_retries=1)
+        if name is None:
+            return None
+
+        alias = self.get_response('input.alias')
+        command = self.get_response('input.command')
+        self.add_alias(name, alias, command)
+        self.save_aliases()
+        
     def shutdown(self):
-        self.save_shortcuts()
+        self.save_aliases()
 
 def create_skill():
-    return ScriptingSkill()
+    return AliasSkill()
