@@ -13,7 +13,10 @@
 # limitations under the License.
 
 import os
+import re
 import yaml
+import shutil
+import random
 from collections import namedtuple, Iterable
 
 from mycroft import MycroftSkill, intent_handler
@@ -21,17 +24,25 @@ from mycroft.messagebus.message import Message
 from mycroft.util.log import LOG
 
 
+sleep_re = r"sleep\((?P<sleep_time>[0-9.]+)\)"
+one_of_re = r"one_of\((?P<choices>.+)\)"
+
+entity_re = r"\{(?P<entity>[a-zA-Z0-9_]+)\}"
+
+FUNC_SEPARATOR = "|"
 LOCAL_CONF = "aliases.yaml"
 INTENTDIR_PREFIX = "tmp"
-COMMANDS_SEPARATOR = ";"
-
-AliasEntity = namedtuple("AliasEntity", ["alias", "command", "from_yaml"])
+SEPARATOR = ";"
 
 
-class AliasSkill(MycroftSkill):
+ScriptEntity = namedtuple("ScriptEntity", ["triggers", "commands", "from_yaml"])
+
+
+class ScriptingSkill(MycroftSkill):
+
     def __init__(self):
-        super().__init__("AliasSkill")
-        self.aliases = dict()
+        super().__init__("ScriptingSkill")
+        self.scripts = dict()
 
     def initialize(self):
         # check if tmp folder exists
@@ -39,35 +50,30 @@ class AliasSkill(MycroftSkill):
             os.mkdir(os.path.join(self.file_system.path, INTENTDIR_PREFIX))
         except FileExistsError:
             pass
-        self.load_aliases()
+        self.load_scripts()
 
         self.add_event('recognizer_loop:wakeword', self.handle_wakeword)
 
-    def load_aliases(self):
-        for name in self.aliases:
-            self.remove_alias(name)
+    def load_scripts(self):
+        for name in self.scripts:
+            self.remove_script(name)
 
-        LOG.info(self.settings.get("aliases", {}))
+        for name, (triggers, commands) in self.settings.get("scripts", {}):
+            self.add_script(name, triggers, commands, False)
 
+        for name, (triggers, commands) in self.scripts_from_yaml().items():
+            if name in self.scripts:
+                self.remove_script(name)
+            self.add_script(name, triggers, commands, True)
 
-        for name, (alias, command) in self.settings.get("aliases", {}):
-            self.add_alias(name, alias, command, False)
-
-        for name, (alias, command) in self.aliases_from_yaml().items():
-            if name in self.aliases:
-                self.remove_alias(name)
-            self.add_alias(name, alias, command, True)
-
-        LOG.info("Aliases loaded.")
-
-    def save_aliases(self):
-        aliases = dict()
-        for name, entity in self.aliases.items():
+    def save_scripts(self):
+        scripts = dict()
+        for name, entity in self.scripts.items():
             if not entity.from_yaml:
-                aliases[name] = (entity.alias, entity.command)
-        self.settings["aliases"] = aliases
+                scripts[name] = (entity.triggers, entity.commands)
+        self.settings["aliases"] = scripts
 
-    def aliases_from_yaml(self):
+    def scripts_from_yaml(self):
         """Load dict with intents from yaml"""
 
         if self.file_system.exists(LOCAL_CONF):
@@ -75,64 +81,112 @@ class AliasSkill(MycroftSkill):
             return yaml.safe_load(aliases)
         else:
             return {}
-
         
-    def remove_alias(self, name):
-        if self.aliases[name].from_yaml:
+    def remove_script(self, name):
+        if self.scripts[name].from_yaml:
             raise ValueError("Alias named \"%s\" defined in yaml so it can't be deleted", name)
-        del(self.aliases[name])
+        del(self.scripts[name])
         self.disable_intent(name + ".intent")
         self.remove_event('{}:{}'.format(self.skill_id, name + ".intent"))
 
 
-    def add_alias(self, name, alias, command, from_yaml=False):
-        if name in self.aliases:
+    def add_script(self, name, triggers_str, commands_str, from_yaml=False):
+        if name in self.scripts:
             raise KeyError("Alias \"%s\" already defined", name)
-        self.aliases[name] = AliasEntity(alias, command, from_yaml)
+        triggers = triggers_str.split(SEPARATOR)
+        commands = commands_str.split(SEPARATOR)
+        entities = re.findall(entity_re, triggers)
+        self.scripts[name] = ScriptEntity(triggers, commands, from_yaml)
         with self.file_system.open(os.path.join(
             self.file_system.path, 
             INTENTDIR_PREFIX,
             name + ".intent"), "w") as f:
-            f.write(alias)
+            f.write("\n".join(triggers))
         intent_name = '{}:{}'.format(self.skill_id, name + ".intent")
         intent_file = os.path.join(self.file_system.path,
                                    INTENTDIR_PREFIX,
                                    name + ".intent")
         # register_padatious_intent
         self.intent_service.register_padatious_intent(intent_name, intent_file)
-        self.add_event(intent_name, self.create_handler(command), 'mycroft.skill.handler')
-        LOG.info("Registered new alias: {}".format(name))
+        self.add_event(intent_name, self.create_handler(commands, entities), 'mycroft.skill.handler')
+        LOG.info("New alias registered: {}".format(name))
+
+    def update_scripts_from_yaml(self):
+        new_from_yaml = self.scripts_from_yaml()
+        old_from_yaml = {name: self.scripts[name] for name in self.scripts
+                         if self.scripts[name].from_yaml}
+        # check names to delete
+        for name in old_from_yaml:
+            if name not in new_from_yaml:
+                self.remove_script(name)
+        # check names to add
+        for name in new_from_yaml:
+            if name not in old_from_yaml:
+                self.add_script(name,
+                                new_from_yaml[name].triggers,
+                                new_from_yaml[name].commands)
+        # check scripts to update
+        for name in new_from_yaml:
+            if name in old_from_yaml and old_from_yaml[name] != new_from_yaml[name]:
+                self.remove_script(name)
+                self.add_script(name,
+                                new_from_yaml[name].triggers,
+                                new_from_yaml[name].commands)
+
+    def on_settings_changed(self):
+        name = self.settings.get("new_name", "")
+        triggers = self.settings.get("new_triggers", "").split(";")
+        commands = self.settings.get("new_commands", "").split(";")
+
+        for i in ["new_name", "new_triggers", "new_commands"]:
+            self.settings[i] = ""
+        
+        if "" not in (name, phrases, commands):
+            self.shortcuts[name] = dict(phrases=phrases, commands=commands)
+            self.disable_intent(name + ".intent")
+            self.remove_event('{}:{}'.format(self.skill_id, name + ".intent"))
+            self.register_shortcut_intent(name, phrases, commands)
+        self.refresh_shortcut_entity()
+        self.save_shortcuts()
 
 
-    def create_handler(self, command):
+    def create_handler(self, commands, entities):
 
-        if COMMANDS_SEPARATOR in command:
-            commands = command.split(COMMANDS_SEPARATOR)
-            def handler(message):
-                com = list(commands)
-                def commands_runner(m=None):
-                    try:
-                        next_msg = com.pop(0)
-                    except IndexError:
-                        self.remove_event('recognizer_loop:audio_output_end')
+        def handler(message):
+            com = list(commands)
+            msg_data = {ent: message.data.get(ent, "") for ent in entities}
+
+            def commands_runner(m=None):
+                try:
+                    next_msg = com.pop(0)
+                except IndexError:
+                    self.remove_event('recognizer_loop:audio_output_end')
+                else:
+                    next_msg = next_msg.strip().format(**msg_data)
+                    sleep_match = re.search(sleep_re, next_msg)
+                    one_of_match = re.search(one_of_re, next_msg)
+                    if sleep_match:
+                        time = float(sleep_match.group('sleep_time'))
+                        LOG.info("Sleeping for %s seconds", time)
+                        self.schedule_event(commands_runner, time)
+                    elif one_of_match:
+                        choices = one_of_match.group('choices').split(FUNC_SEPARATOR)
+                        msg = random.choice(choices)
+                        self.bus.emit(Message("recognizer_loop:utterance", {
+                            'utterances': [msg],
+                            'lang': self.lang}))
                     else:
                         self.bus.emit(Message("recognizer_loop:utterance", {
                             'utterances': [next_msg],
                             'lang': self.lang}))
 
+            self.bus.emit(Message("recognizer_loop:utterance", {
+                'utterances': [com.pop(0)],
+                'lang': self.lang
 
-                self.bus.emit(Message("recognizer_loop:utterance", {
-                    'utterances': [com.pop(0)],
-                    'lang': self.lang
-                }))
-                if len(com) > 0:
-                    self.add_event('recognizer_loop:audio_output_end', commands_runner)
-        else:
-            def handler(message):
-                self.bus.emit(Message("recognizer_loop:utterance", {
-                    'utterances': [command],
-                    'lang': self.lang
-                }))                
+            }))
+            if len(com) > 0:
+                self.add_event('recognizer_loop:audio_output_end', commands_runner)
             
         return handler
 
@@ -141,27 +195,27 @@ class AliasSkill(MycroftSkill):
         self.remove_event('recognizer_loop:audio_output_end')
 
     @intent_handler("list.aliases.intent")
-    def list_aliases_handler(self, message):
-        names = ",".join(self.aliases)
+    def list_scipts(self, message):
+        names = ",".join(self.scripts)
         self.speak_dialog('list.aliases', {'aliases': names})
 
     @intent_handler("expose.aliases.intent")
-    def expose_shortcut_handler(self, message):
+    def describe_script_handler(self, message):
         name = message.data.get('alias')
         # TODO: i think it should be something like fuzzy matching
-        if name in self.aliases:
+        if name in self.scripts:
             self.speak_dialog('expose.aliases',
                               {'aliases': name,
-                               'phrases': self.aliases[name].alias,
-                               'commands': self.aliases[name].command})
+                               'phrases': self.scripts[name].alias,
+                               'commands': self.scripts[name].command})
         else:
             self.speak_dialog('alias.not.found', {'alias': names})
 
     @intent_handler("delete.aliases.intent")
-    def delete_shortcut_handler(self, message):
+    def delete_scripts(self, message):
         shortcut = message.data.get('alias')
-        if shortcut in self.aliases:
-            del(self.aliases[shortcut])
+        if shortcut in self.scripts:
+            del(self.scripts[shortcut])
             self.disable_intent(shortcut + ".intent")
             self.remove_event('{}:{}'.format(self.skill_id,
                                              shortcut + ".intent"))
@@ -171,11 +225,9 @@ class AliasSkill(MycroftSkill):
         self.speak_dialog(dialog, {'alias': shortcut})
 
     @intent_handler("create.alias.intent")
-    def create_shortcut_handler(self, message):
-
-
+    def create_alias_handler(self, message):
         name = self.get_response('input.alias.name',
-                                 validator=lambda utt: utt not in self.aliases, 
+                                 validator=lambda utt: utt not in self.scripts, 
                                  on_fail='name.already.used',
                                  num_retries=1)
         if name is None:
@@ -183,11 +235,13 @@ class AliasSkill(MycroftSkill):
 
         alias = self.get_response('input.alias')
         command = self.get_response('input.command')
-        self.add_alias(name, alias, command)
-        self.save_aliases()
+        self.add_script(name, alias, command)
+        self.save_scripts()
         
     def shutdown(self):
-        self.save_aliases()
+        self.remove_event('recognizer_loop:audio_output_end')
+        self.save_scripts()
+        shutil.rmtree(os.path.join(self.file_system.path, INTENTDIR_PREFIX))
 
 def create_skill():
-    return AliasSkill()
+    return ScriptingSkill()
