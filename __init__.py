@@ -83,8 +83,8 @@ class ScriptingSkill(MycroftSkill):
             return {}
         
     def remove_script(self, name):
-        if self.scripts[name].from_yaml:
-            raise ValueError("Alias named \"%s\" defined in yaml so it can't be deleted", name)
+        # if self.scripts[name].from_yaml:
+        #     raise ValueError("Alias named \"%s\" defined in yaml so it can't be deleted", name)
         del(self.scripts[name])
         self.disable_intent(name + ".intent")
         self.remove_event('{}:{}'.format(self.skill_id, name + ".intent"))
@@ -134,20 +134,19 @@ class ScriptingSkill(MycroftSkill):
                                 new_from_yaml[name].commands)
 
     def on_settings_changed(self):
-        name = self.settings.get("new_name", "")
-        triggers = self.settings.get("new_triggers", "").split(";")
-        commands = self.settings.get("new_commands", "").split(";")
+        name = self.settings.get("new_name")
+        triggers = self.settings.get("new_triggers")
+        commands = self.settings.get("new_commands")
 
-        for i in ["new_name", "new_triggers", "new_commands"]:
-            self.settings[i] = ""
-        
-        if "" not in (name, phrases, commands):
-            self.shortcuts[name] = dict(phrases=phrases, commands=commands)
-            self.disable_intent(name + ".intent")
-            self.remove_event('{}:{}'.format(self.skill_id, name + ".intent"))
-            self.register_shortcut_intent(name, phrases, commands)
-        self.refresh_shortcut_entity()
-        self.save_shortcuts()
+        if none in (name, triggers, commands):
+            return None
+
+        if name in self.scripts and self.scripts[name].from_yaml:
+            self.speak_dialog('name.already.used')
+            return None
+                
+        self.add_script(name, triggers, commands)
+        self.save_scripts()
 
 
     def create_handler(self, commands, entities):
