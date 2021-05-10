@@ -59,7 +59,13 @@ class ScriptingSkill(MycroftSkill):
         for name in self.scripts:
             self.remove_script(name)
 
-        for name, (triggers, commands) in self.scripts_from_yaml().items():
+        try:
+            scripts = self.scripts_from_yaml()
+        except yaml.YAMLError:
+            self.speak_dialog('scripts.load.failed.dialog')
+            return None
+
+        for name, (triggers, commands) in scripts.items():
             if name in self.scripts:
                 self.remove_script(name)
             self.add_script(name, triggers, commands, True)
@@ -71,7 +77,7 @@ class ScriptingSkill(MycroftSkill):
         if self.file_system.exists(LOCAL_CONF):
             with self.file_system.open(LOCAL_CONF, "r") as f:
                 aliases = f.read()
-            return yaml.safe_load(aliases)
+            return yaml.load(aliases)
         else:
             return {}
 
@@ -96,7 +102,9 @@ class ScriptingSkill(MycroftSkill):
         self.add_event(intent_name, self.create_handler(commands, entities), 'mycroft.skill.handler')
         LOG.info("New alias registered: {}".format(name))
 
-    def update_scripts_from_yaml(self):
+    def update_from_yaml(self):
+        """Update scripts from yaml config"""
+
         new_from_yaml = self.scripts_from_yaml()
         old_from_yaml = {name: self.scripts[name] for name in self.scripts
                          if self.scripts[name].from_yaml}
@@ -117,6 +125,19 @@ class ScriptingSkill(MycroftSkill):
                 self.add_script(name,
                                 new_from_yaml[name].triggers,
                                 new_from_yaml[name].commands)
+
+    def update_from_yaml_and_report(self):
+        """Update script from yaml and say if something went wrong.
+
+        Return True on successfull update False othervise"""
+
+        try:
+            self.update_from_yaml()
+        except yaml.YAMLError:
+            self.speak_dialog('scripts.update.failed.dialog')
+            return False
+        else:
+            return True
 
     def create_handler(self, commands, entities):
 
@@ -166,7 +187,8 @@ class ScriptingSkill(MycroftSkill):
     def handle_reload_config_request(self):
         before_update = {name: self.scripts[name] for name in self.scripts
                          if self.scripts[name].from_yaml}
-        self.update_scripts_from_yaml()
+        if not self.update_from_yaml():
+            return None
         after_update = {name: self.scripts[name] for name in self.scripts
                          if self.scripts[name].from_yaml}
         if before_update == after_update:
