@@ -161,6 +161,19 @@ class ScriptingSkill(MycroftSkill):
     def handle_wakeword(self):
         """Interrupt sequence on new wakeword"""
         self.remove_event('recognizer_loop:audio_output_end')
+
+    @intent_handler('reload.config.intent')
+    def handle_reload_config_request(self):
+        before_update = {name: self.scripts[name] for name in self.scripts
+                         if self.scripts[name].from_yaml}
+        self.update_scripts_from_yaml()
+        after_update = {name: self.scripts[name] for name in self.scripts
+                         if self.scripts[name].from_yaml}
+        if before_update == after_update:
+            self.speak_dialog('no.scripts.updated.dialog')
+        else:
+            self.speak_dialog('scripts.updated.dialog')
+        
         
     def shutdown(self):
         self.remove_event('recognizer_loop:audio_output_end')
