@@ -69,7 +69,8 @@ class ScriptingSkill(MycroftSkill):
         """Load dict with intents from yaml"""
 
         if self.file_system.exists(LOCAL_CONF):
-            aliases = self.file_system.open(LOCAL_CONF, "r").read()
+            with self.file_system.open(LOCAL_CONF, "r") as f:
+                aliases = f.read()
             return yaml.safe_load(aliases)
         else:
             return {}
