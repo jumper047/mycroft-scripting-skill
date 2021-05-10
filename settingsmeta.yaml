@@ -8,9 +8,9 @@ skillMetadata:
           value: ""
         - name: new_triggers
           type: text
-          label: Name
+          label: Triggers
           value: ""
         - name: new_commands
           type: text
-          label: Name
+          label: Commands
           value: ""

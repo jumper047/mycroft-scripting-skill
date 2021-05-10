@@ -30,7 +30,7 @@ one_of_re = r"one_of\((?P<choices>.+)\)"
 entity_re = r"\{(?P<entity>[a-zA-Z0-9_]+)\}"
 
 FUNC_SEPARATOR = "|"
-LOCAL_CONF = "aliases.yaml"
+LOCAL_CONF = "scripts.yaml"
 INTENTDIR_PREFIX = "tmp"
 SEPARATOR = ";"
 
@@ -95,7 +95,7 @@ class ScriptingSkill(MycroftSkill):
             raise KeyError("Alias \"%s\" already defined", name)
         triggers = triggers_str.split(SEPARATOR)
         commands = commands_str.split(SEPARATOR)
-        entities = re.findall(entity_re, triggers)
+        entities = re.findall(entity_re, triggers_str)
         self.scripts[name] = ScriptEntity(triggers, commands, from_yaml)
         with self.file_system.open(os.path.join(
             self.file_system.path, 
@@ -132,22 +132,6 @@ class ScriptingSkill(MycroftSkill):
                 self.add_script(name,
                                 new_from_yaml[name].triggers,
                                 new_from_yaml[name].commands)
-
-    def on_settings_changed(self):
-        name = self.settings.get("new_name")
-        triggers = self.settings.get("new_triggers")
-        commands = self.settings.get("new_commands")
-
-        if none in (name, triggers, commands):
-            return None
-
-        if name in self.scripts and self.scripts[name].from_yaml:
-            self.speak_dialog('name.already.used')
-            return None
-                
-        self.add_script(name, triggers, commands)
-        self.save_scripts()
-
 
     def create_handler(self, commands, entities):
 
@@ -193,54 +177,61 @@ class ScriptingSkill(MycroftSkill):
         """Interrupt sequence on new wakeword"""
         self.remove_event('recognizer_loop:audio_output_end')
 
-    @intent_handler("list.aliases.intent")
-    def list_scipts(self, message):
-        names = ",".join(self.scripts)
-        self.speak_dialog('list.aliases', {'aliases': names})
+    def on_settings_changed(self):
+        name = self.settings.get("new_name")
+        triggers = self.settings.get("new_triggers")
+        commands = self.settings.get("new_commands")
 
-    @intent_handler("expose.aliases.intent")
-    def describe_script_handler(self, message):
-        name = message.data.get('alias')
-        # TODO: i think it should be something like fuzzy matching
-        if name in self.scripts:
-            self.speak_dialog('expose.aliases',
-                              {'aliases': name,
-                               'phrases': self.scripts[name].alias,
-                               'commands': self.scripts[name].command})
-        else:
-            self.speak_dialog('alias.not.found', {'alias': names})
+        for key in ["new_name", "new_triggers", "new_command"]:
+            self.settings[key] = ""
 
-    @intent_handler("delete.aliases.intent")
-    def delete_scripts(self, message):
-        shortcut = message.data.get('alias')
-        if shortcut in self.scripts:
-            del(self.scripts[shortcut])
-            self.disable_intent(shortcut + ".intent")
-            self.remove_event('{}:{}'.format(self.skill_id,
-                                             shortcut + ".intent"))
-            dialog = 'delete.alias'
-        else:
-            dialog = 'alias.not.found'
-        self.speak_dialog(dialog, {'alias': shortcut})
-
-    @intent_handler("create.alias.intent")
-    def create_alias_handler(self, message):
-        name = self.get_response('input.alias.name',
-                                 validator=lambda utt: utt not in self.scripts, 
-                                 on_fail='name.already.used',
-                                 num_retries=1)
-        if name is None:
+        if none in (name, triggers, commands):
+            LOG.info("something wrong with script from settings")
             return None
 
-        alias = self.get_response('input.alias')
-        command = self.get_response('input.command')
-        self.add_script(name, alias, command)
+        if name in self.scripts and self.scripts[name].from_yaml:
+            self.speak_dialog('name.already.used')
+            return None
+                
+        self.add_script(name, triggers, commands)
         self.save_scripts()
         
     def shutdown(self):
         self.remove_event('recognizer_loop:audio_output_end')
         self.save_scripts()
         shutil.rmtree(os.path.join(self.file_system.path, INTENTDIR_PREFIX))
+
+    @intent_handler("list.scripts.intent")
+    def list_scipts_handler(self, message):
+        names = ",  ".join(self.scripts)
+        self.speak_dialog('list.scripts', {'scripts': names})
+
+
+    @intent_handler("describe.script.intent")
+    def describe_script_handler(self, message):
+        name = message.data.get('script')
+        # TODO: i think it should be something like fuzzy matching
+        if name in self.scripts:
+            self.speak_dialog('describe.script',
+                              {'script': name,
+                               'triggers': self.scripts[name].triggers,
+                               'commands': self.scripts[name].commands})
+        else:
+            self.speak_dialog('script.not.found', {'script': name})
+
+    @intent_handler("delete.script.intent")
+    def delete_script_handler(self, message):
+        shortcut = message.data.get('script')
+        if shortcut in self.scripts:
+            del(self.scripts[shortcut])
+            self.disable_intent(shortcut + ".intent")
+            self.remove_event('{}:{}'.format(self.skill_id,
+                                             shortcut + ".intent"))
+            dialog = 'delete.script'
+        else:
+            dialog = 'script.not.found'
+        self.speak_dialog(dialog, {'script': shortcut})
+
 
 def create_skill():
     return ScriptingSkill()
