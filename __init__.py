@@ -99,7 +99,7 @@ class ScriptingSkill(MycroftSkill):
 
         if self.file_system.exists(LOCAL_CONF):
             with self.file_system.open(LOCAL_CONF, "r") as f:
-                scripts = yaml.load(f.read())
+                scripts = yaml.safe_load(f.read())
             return {x: ScriptEntity(*y, True) for x, y in scripts.items()}
         else:
             return {}
