@@ -18,7 +18,7 @@ import yaml
 import shutil
 import random
 import enum
-from collections import namedtuple, Iterable
+from collections import namedtuple
 
 from mycroft import MycroftSkill, intent_handler
 from mycroft.messagebus.message import Message
